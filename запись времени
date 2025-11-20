@@ -1,0 +1,195 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <EEPROM.h>
+#include <math.h>
+#include <DS3231.h>
+
+// === RTC ===
+DS3231 myRTC; // без параметров
+
+// === LCD ===
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// === KEYPAD ===
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {7, 6, 5, 4}; 
+byte colPins[COLS] = {11, 10, 9, 8};
+
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+// === EEPROM LOG ===
+unsigned long lastWrite = 0;
+const unsigned long WRITE_INTERVAL = 30000;
+int eepromAddr = 0;
+
+struct LogRecord {
+  uint32_t timestamp;
+  float lux;
+  char tag[20];
+};
+
+// === LUX COMPUTATION ===
+float calculateLuxFromADC(int D) {
+  const float R_FIXED = 10000.0f;
+  const float C = 500.0f;
+  const float GAMMA = 1.4f;
+
+  if (D <= 0) return 1000000.0f;
+  if (D >= 1023) return 0.0f;
+
+  float adc = (float)D;
+  float vRatio = (1023.0f / adc) - 1.0f;
+  float rLDR = R_FIXED * vRatio;
+  float lux = C * powf(rLDR / 1000.0f, -GAMMA);
+
+  return lux;
+}
+
+// === RTC READ HELPERS ===
+int getYearRTC()   { return 2000 + myRTC.getYear(); }
+int getMonthRTC()  { bool century = false; return myRTC.getMonth(century); }
+int getDayRTC()    { return myRTC.getDate(); }
+int getHourRTC()   { bool h12 = false; bool PM = false; return myRTC.getHour(h12, PM); }
+int getMinuteRTC() { return myRTC.getMinute(); }
+int getSecondRTC() { return myRTC.getSecond(); }
+
+// === EEPROM WRITE ===
+void writeLog(float lux) {
+  uint32_t ts =
+      getSecondRTC() +
+      getMinuteRTC() * 60 +
+      getHourRTC()   * 3600 +
+      getDayRTC()    * 86400;
+
+  LogRecord rec;
+  rec.timestamp = ts;
+  rec.lux = lux;
+  strncpy(rec.tag, "LUX MEASUREMENT", 19);
+  rec.tag[19] = 0;
+
+  EEPROM.put(eepromAddr, rec);
+  eepromAddr += sizeof(LogRecord);
+
+  lcd.clear();
+  lcd.print("Saved!");
+  lcd.setCursor(0, 1);
+  lcd.print("Lux: ");
+  lcd.print(lux, 1);
+  delay(400);
+}
+
+// === NUMBER INPUT FUNCTION ===
+int readNumber(const char* prompt, int digits, int minVal, int maxVal) {
+  lcd.clear();
+  lcd.print(prompt);
+  lcd.setCursor(0, 1);
+  String num = "";
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key >= '0' && key <= '9') {
+        if (num.length() < digits) {
+          num += key;
+          lcd.print(key);
+        }
+      } else if (key == '*') {
+        return -1; // cancel
+      } else if (key == '#') {
+        if (num.length() > 0) {
+          int val = num.toInt();
+          if (val < minVal) val = minVal;
+          if (val > maxVal) val = maxVal;
+          return val;
+        }
+      }
+    }
+  }
+}
+
+// === SET DATE/TIME ===
+void setDateTime() {
+  lcd.clear();
+  lcd.print("Set Date/Time");
+  delay(500);
+
+  int year = readNumber("Year (2000-2099):", 4, 2000, 2099);
+  if (year == -1) return;
+
+  int month = readNumber("Month (1-12):", 2, 1, 12);
+  if (month == -1) return;
+
+  int day = readNumber("Day (1-31):", 2, 1, 31);
+  if (day == -1) return;
+
+  int hour = readNumber("Hour (0-23):", 2, 0, 23);
+  if (hour == -1) return;
+
+  int minute = readNumber("Minute (0-59):", 2, 0, 59);
+  if (minute == -1) return;
+
+  int second = readNumber("Second (0-59):", 2, 0, 59);
+  if (second == -1) return;
+
+  myRTC.setYear(year - 2000);
+  myRTC.setMonth(month);
+  myRTC.setDate(day);
+  myRTC.setHour(hour);
+  myRTC.setMinute(minute);
+  myRTC.setSecond(second);
+
+  lcd.clear();
+  lcd.print("Time Saved!");
+  delay(1000);
+}
+
+// === SETUP ===
+void setup() {
+  Serial.begin(115200);
+  lcd.init();
+  lcd.backlight();
+  lcd.print("LDR Meter");
+  delay(1000);
+}
+
+// === LOOP ===
+void loop() {
+  char key = keypad.getKey();
+  if (key == 'A') {
+    setDateTime();
+  }
+
+  int adcValue = analogRead(A0);
+  float lux = calculateLuxFromADC(adcValue);
+
+  int hour = getHourRTC();
+  int minute = getMinuteRTC();
+  int second = getSecondRTC();
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  char buf[17];
+  sprintf(buf, "%02d:%02d:%02d Lux", hour, minute, second);
+  lcd.print(buf);
+
+  lcd.setCursor(0,1);
+  lcd.print("ADC:");
+  lcd.print(adcValue);
+  lcd.print(" ");
+  lcd.print((int)lux);
+
+  if (millis() - lastWrite > WRITE_INTERVAL) {
+    lastWrite = millis();
+    writeLog(lux);
+  }
+
+  delay(200);
+}
