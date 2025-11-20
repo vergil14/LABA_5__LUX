@@ -1,0 +1,65 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <math.h>
+
+// LCD 16x2 по адресу 0x27
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ---- ВАША ФУНКЦИЯ ДЛЯ ПЕРЕВОДА ADC → Lux ----
+float calculateLuxFromADC(int D) {
+  const float R_FIXED = 10000.0f;   // сопротивление в делителе (Ом)
+  const float C = 500.0f;           
+  const float GAMMA = 1.4f;         
+
+  if (D <= 0) return 1000000.0f;  
+  if (D >= 1023) return 0.0f;     
+
+  float adc = (float)D;
+
+  float vRatio = (1023.0f / adc) - 1.0f;
+  float rLDR = R_FIXED * vRatio;
+
+  float lux = C * powf(rLDR / 1000.0f, -GAMMA);
+
+  Serial.print("ADC="); Serial.print(D);
+  Serial.print("  R_LDR="); Serial.print(rLDR, 1);
+  Serial.print(" Ohm  Lux≈"); Serial.println(lux, 2);
+
+  return lux;
+}
+
+// ---------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("LDR Lux Meter");
+  delay(800);
+}
+
+// ---------------------------------------------------
+void loop() {
+  int adcValue = analogRead(A0);
+  float lux = calculateLuxFromADC(adcValue);
+
+  // --- Serial вывод ---
+  Serial.print("Lux = ");
+  Serial.println(lux);
+
+  // --- LCD вывод ---
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ADC: ");
+  lcd.print(adcValue);
+
+  lcd.setCursor(0, 1);
+  lcd.print("Lux: ");
+  lcd.print(lux, 1);
+
+  delay(500);
+}
